@@ -1,6 +1,6 @@
 package main
 
-import "blind_watermark_go/cmd"
+import "github.com/jeanhua/blind-watermark/cmd"
 
 func main() {
 	cmd.Execute()

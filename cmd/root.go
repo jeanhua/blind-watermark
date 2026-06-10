@@ -1,10 +1,11 @@
 package cmd
 
 import (
-	"blind_watermark_go/internal/bwm"
-	"blind_watermark_go/internal/imageutil"
 	"fmt"
 	"strconv"
+
+	"github.com/jeanhua/blind-watermark/internal/bwm"
+	"github.com/jeanhua/blind-watermark/internal/imageutil"
 
 	"github.com/spf13/cobra"
 )
