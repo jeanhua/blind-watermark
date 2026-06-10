@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Extract changelog for tag
+        id: changelog
+        run: |
+          VERSION=''${GITHUB_REF#refs/tags/}''
+          awk -v ver="''$VERSION''" '
+            BEGIN { found=0 }
+            /^## / {
+              if (found) exit
+              if ($2 == ver || $2 " " $3 == ver) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > /tmp/release_body.md
+          cat /tmp/release_body.md
+          # Fallback if changelog section not found
+          if [ ! -s /tmp/release_body.md ]; then
+            echo "Release $VERSION" > /tmp/release_body.md
+          fi
+          {
+            echo 'body<<EOF'
+            cat /tmp/release_body.md
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Build (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o blind_watermark_go_linux_amd64 .
+
+      - name: Build (linux/arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o blind_watermark_go_linux_arm64 .
+
+      - name: Build (darwin/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o blind_watermark_go_darwin_amd64 .
+
+      - name: Build (darwin/arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o blind_watermark_go_darwin_arm64 .
+
+      - name: Build (windows/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o blind_watermark_go_windows_amd64.exe .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            blind_watermark_go_linux_amd64
+            blind_watermark_go_linux_arm64
+            blind_watermark_go_darwin_amd64
+            blind_watermark_go_darwin_arm64
+            blind_watermark_go_windows_amd64.exe
