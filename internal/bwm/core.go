@@ -3,6 +3,7 @@ package bwm
 import (
 	"math"
 	"math/rand/v2"
+	"sync"
 )
 
 // Params holds watermark algorithm parameters.
@@ -25,7 +26,6 @@ func DefaultParams() Params {
 // WaterMarkCore holds the state for embedding/extracting watermarks.
 type WaterMarkCore struct {
 	Params
-	// Image data (BGR float32)
 	img  [][][3]float32
 	imgH int
 	imgW int
@@ -33,11 +33,10 @@ type WaterMarkCore struct {
 	yPlane, uPlane, vPlane [][]float32
 	yOrigH, yOrigW         int
 	// DWT results per channel
-	caY, caU, caV    [][]float32
-	hvdY, hvdU, hvdV [][]float32 // [CH, CV, CD] stored flat for simplicity
-	chY, cvY, cdY    [][]float32
-	chU, cvU, cdU    [][]float32
-	chV, cvV, cdV    [][]float32
+	caY, caU, caV [][]float32
+	chY, cvY, cdY [][]float32
+	chU, cvU, cdU [][]float32
+	chV, cvV, cdV [][]float32
 	// Block decomposition
 	caBlockY, caBlockU, caBlockV [][][][]float32
 	caBlockRows, caBlockCols     int
@@ -68,19 +67,19 @@ func (c *WaterMarkCore) ReadImage(img [][][3]float32) {
 	c.img = img
 	c.imgH = len(img)
 	c.imgW = len(img[0])
-	c.yPlane, c.uPlane, c.vPlane = ImageBGRToYUV(img)
+	c.yPlane, c.uPlane, c.vPlane = ImageBGRToYUVParallel(img)
 	c.yOrigH, c.yOrigW = c.imgH, c.imgW
 	// Pad to even
 	c.yPlane, _, _ = PadToEven(c.yPlane)
 	c.uPlane, _, _ = PadToEven(c.uPlane)
 	c.vPlane, _, _ = PadToEven(c.vPlane)
-	// DWT on each channel
-	c.caY, c.chY, c.cvY, c.cdY = HaarDWT2(c.yPlane)
-	c.caU, c.chU, c.cvU, c.cdU = HaarDWT2(c.uPlane)
-	c.caV, c.chV, c.cvV, c.cdV = HaarDWT2(c.vPlane)
-	c.hvdY = nil
-	c.hvdU = nil
-	c.hvdV = nil // stored separately
+	// DWT on each channel (concurrent)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); c.caY, c.chY, c.cvY, c.cdY = HaarDWT2(c.yPlane) }()
+	go func() { defer wg.Done(); c.caU, c.chU, c.cvU, c.cdU = HaarDWT2(c.uPlane) }()
+	go func() { defer wg.Done(); c.caV, c.chV, c.cvV, c.cdV = HaarDWT2(c.vPlane) }()
+	wg.Wait()
 	// Decompose CA into blocks
 	c.caBlockY = blockSplit(c.caY, c.BlockShape[0], c.BlockShape[1])
 	c.caBlockU = blockSplit(c.caU, c.BlockShape[0], c.BlockShape[1])
@@ -91,7 +90,6 @@ func (c *WaterMarkCore) ReadImage(img [][][3]float32) {
 	}
 	c.blockNum = c.caBlockRows * c.caBlockCols
 	c.blockSize = c.BlockShape[0] * c.BlockShape[1]
-	// Part shape (the usable area after ignoring leftovers)
 	c.partH = c.caBlockRows * c.BlockShape[0]
 	c.partW = c.caBlockCols * c.BlockShape[1]
 }
@@ -106,55 +104,66 @@ func (c *WaterMarkCore) ReadWM(bits []float32) {
 	if c.wmSize > c.blockNum {
 		panic("watermark too large for image")
 	}
-	// Generate shuffle indices
 	c.shuffleIdx = ShuffleStrategy(c.PasswordIMG, c.blockNum, c.blockSize)
 }
 
 // Embed embeds the watermark and returns the watermarked BGR image.
+// Channel-level and block-level processing run concurrently.
 func (c *WaterMarkCore) Embed() [][][3]float32 {
 	if c.shuffleIdx == nil {
 		c.shuffleIdx = ShuffleStrategy(c.PasswordIMG, c.blockNum, c.blockSize)
 	}
-	// Embed on each channel
-	c.processChannelEmbed(c.caBlockY, c.shuffleIdx, c.caY, c.chY, c.cvY, c.cdY, c.yPlane, c.yOrigH, c.yOrigW)
-	c.processChannelEmbed(c.caBlockU, c.shuffleIdx, c.caU, c.chU, c.cvU, c.cdU, c.uPlane, c.yOrigH, c.yOrigW)
-	c.processChannelEmbed(c.caBlockV, c.shuffleIdx, c.caV, c.chV, c.cvV, c.cdV, c.vPlane, c.yOrigH, c.yOrigW)
-	// Reconstruct: IDWT on each channel, then YUV to BGR
-	yRec := HaarIDWT2(c.caY, c.chY, c.cvY, c.cdY)
-	uRec := HaarIDWT2(c.caU, c.chU, c.cvU, c.cdU)
-	vRec := HaarIDWT2(c.caV, c.chV, c.cvV, c.cdV)
+
+	// Embed on each channel: Y, U, V run concurrently
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); c.processChannelEmbed(c.caBlockY, c.shuffleIdx, c.caY) }()
+	go func() { defer wg.Done(); c.processChannelEmbed(c.caBlockU, c.shuffleIdx, c.caU) }()
+	go func() { defer wg.Done(); c.processChannelEmbed(c.caBlockV, c.shuffleIdx, c.caV) }()
+	wg.Wait()
+
+	// IDWT on each channel concurrently
+	var yRec, uRec, vRec [][]float32
+	wg.Add(3)
+	go func() { defer wg.Done(); yRec = HaarIDWT2(c.caY, c.chY, c.cvY, c.cdY) }()
+	go func() { defer wg.Done(); uRec = HaarIDWT2(c.caU, c.chU, c.cvU, c.cdU) }()
+	go func() { defer wg.Done(); vRec = HaarIDWT2(c.caV, c.chV, c.cvV, c.cdV) }()
+	wg.Wait()
+
 	// Remove padding
 	yRec = RemovePad(yRec, c.yOrigH, c.yOrigW)
 	uRec = RemovePad(uRec, c.yOrigH, c.yOrigW)
 	vRec = RemovePad(vRec, c.yOrigH, c.yOrigW)
-	// YUV -> BGR
-	result := YUVToImageBGR(yRec, uRec, vRec, c.yOrigH, c.yOrigW)
-	// Clip to 0-255
-	for i := 0; i < len(result); i++ {
-		for j := 0; j < len(result[0]); j++ {
-			for k := 0; k < 3; k++ {
-				result[i][j][k] = clamp(result[i][j][k], 0, 255)
-			}
-		}
-	}
+
+	// YUV -> BGR (parallel row conversion)
+	result := YUVToImageBGRParallel(yRec, uRec, vRec, c.yOrigH, c.yOrigW)
+
+	// Clip to 0-255 (parallel by row)
+	clipParallel(result)
 	return result
 }
 
-func (c *WaterMarkCore) processChannelEmbed(caBlock [][][][]float32, shuffleIdx [][]int, ca, ch, cv, cd [][]float32, outPlane [][]float32, origH, origW int) {
-
+// processChannelEmbed embeds watermark into one channel's blocks, using concurrent block processing.
+func (c *WaterMarkCore) processChannelEmbed(caBlock [][][][]float32, shuffleIdx [][]int, ca [][]float32) {
 	rows := len(caBlock)
 	cols := len(caBlock[0])
-	// blockH, blockW unused; blocks are square
+	total := rows * cols
 
-	// Process each block
-	for i := 0; i < rows; i++ {
-		for j := 0; j < cols; j++ {
-			idx := i*cols + j
-			block := caBlock[i][j]
-			modified := blockEmbed(block, shuffleIdx[idx], c.wmBits[idx%c.wmSize], c.D1, c.D2)
-			caBlock[i][j] = modified
-		}
+	// Process blocks concurrently. Each goroutine handles a stripe of rows.
+	var wg sync.WaitGroup
+	for bi := 0; bi < rows; bi++ {
+		wg.Add(1)
+		go func(ri int) {
+			defer wg.Done()
+			for cj := 0; cj < cols; cj++ {
+				idx := ri*cols + cj
+				block := caBlock[ri][cj]
+				caBlock[ri][cj] = blockEmbed(block, shuffleIdx[idx], c.wmBits[idx%c.wmSize], c.D1, c.D2)
+			}
+		}(bi)
 	}
+	wg.Wait()
+
 	// Reassemble blocks into CA
 	caPart := blockJoin(caBlock)
 	for i := 0; i < c.partH; i++ {
@@ -162,32 +171,15 @@ func (c *WaterMarkCore) processChannelEmbed(caBlock [][][][]float32, shuffleIdx 
 			ca[i][j] = caPart[i][j]
 		}
 	}
-	// outPlane modified via ca // signal that the plane was modified in-place via ca/ch/cv/cd
-	_ = ch
-	_ = cv
-	_ = cd
-	_ = outPlane
-	_ = origH
-	_ = origW
+	_ = total
 }
 
 func blockEmbed(block [][]float32, shuffle []int, wmBit float32, d1, d2 float32) [][]float32 {
 	blockDCT := DCT2D(block)
 	// Flatten and shuffle
-	flat := make([]float32, len(shuffle))
-	for i := 0; i < len(block); i++ {
-		for j := 0; j < len(block[0]); j++ {
-			flat[i*len(block[0])+j] = blockDCT[i][j]
-		}
-	}
+	flat := flatten(blockDCT, len(shuffle))
 	shuffled := ShuffleArray(flat, shuffle)
-	shuffledMat := make([][]float32, len(block))
-	for i := 0; i < len(block); i++ {
-		shuffledMat[i] = make([]float32, len(block[0]))
-		for j := 0; j < len(block[0]); j++ {
-			shuffledMat[i][j] = shuffled[i*len(block[0])+j]
-		}
-	}
+	shuffledMat := unflatten(shuffled, len(block), len(block[0]))
 	// SVD
 	u, s, v := JacobiSVD(shuffledMat)
 	// Modify singular values
@@ -197,66 +189,80 @@ func blockEmbed(block [][]float32, shuffle []int, wmBit float32, d1, d2 float32)
 	}
 	// Reconstruct
 	recon := DiagMatMul(u, s, v)
-	// Flatten, unshuffle, reshape
-	reconFlat := make([]float32, len(shuffle))
-	for i := 0; i < len(recon); i++ {
-		for j := 0; j < len(recon[0]); j++ {
-			reconFlat[i*len(recon[0])+j] = recon[i][j]
-		}
-	}
+	reconFlat := flatten(recon, len(shuffle))
 	unshuffled := UnshuffleArray(reconFlat, shuffle)
-	unshuffledMat := make([][]float32, len(block))
-	for i := 0; i < len(block); i++ {
-		unshuffledMat[i] = make([]float32, len(block[0]))
-		for j := 0; j < len(block[0]); j++ {
-			unshuffledMat[i][j] = unshuffled[i*len(block[0])+j]
-		}
-	}
-	return IDCT2D(unshuffledMat)
+	return IDCT2D(unflatten(unshuffled, len(block), len(block[0])))
 }
 
-// ExtractRaw extracts raw watermark bits from each block and channel.
-// Returns 3 x blockNum float32 matrix.
+// flatten converts an r x c matrix to a flat slice of length total.
+func flatten(mat [][]float32, total int) []float32 {
+	out := make([]float32, total)
+	c := len(mat[0])
+	for i := 0; i < len(mat); i++ {
+		copy(out[i*c:(i+1)*c], mat[i])
+	}
+	return out
+}
+
+// unflatten converts a flat slice to an r x c matrix.
+func unflatten(flat []float32, r, c int) [][]float32 {
+	out := make([][]float32, r)
+	for i := 0; i < r; i++ {
+		out[i] = make([]float32, c)
+		copy(out[i], flat[i*c:(i+1)*c])
+	}
+	return out
+}
+
+// ExtractRaw extracts raw watermark bits from each block and channel (concurrent channels).
 func (c *WaterMarkCore) ExtractRaw(img [][][3]float32) [][]float32 {
 	c.ReadImage(img)
 	if c.shuffleIdx == nil {
 		c.shuffleIdx = ShuffleStrategy(c.PasswordIMG, c.blockNum, c.blockSize)
 	}
 	raw := make([][]float32, 3)
-	raw[0] = c.extractChannel(c.caBlockY, c.caBlockRows, c.caBlockCols, c.shuffleIdx)
-	raw[1] = c.extractChannel(c.caBlockU, c.caBlockRows, c.caBlockCols, c.shuffleIdx)
-	raw[2] = c.extractChannel(c.caBlockV, c.caBlockRows, c.caBlockCols, c.shuffleIdx)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		raw[0] = c.extractChannel(c.caBlockY, c.caBlockRows, c.caBlockCols, c.shuffleIdx)
+	}()
+	go func() {
+		defer wg.Done()
+		raw[1] = c.extractChannel(c.caBlockU, c.caBlockRows, c.caBlockCols, c.shuffleIdx)
+	}()
+	go func() {
+		defer wg.Done()
+		raw[2] = c.extractChannel(c.caBlockV, c.caBlockRows, c.caBlockCols, c.shuffleIdx)
+	}()
+	wg.Wait()
 	return raw
 }
 
 func (c *WaterMarkCore) extractChannel(caBlock [][][][]float32, rows, cols int, shuffleIdx [][]int) []float32 {
-	result := make([]float32, rows*cols)
-	for i := 0; i < rows; i++ {
-		for j := 0; j < cols; j++ {
-			idx := i*cols + j
-			block := caBlock[i][j]
-			result[idx] = blockExtract(block, shuffleIdx[idx], c.D1, c.D2)
-		}
+	total := rows * cols
+	result := make([]float32, total)
+	// Concurrent block extraction per row stripe
+	var wg sync.WaitGroup
+	for bi := 0; bi < rows; bi++ {
+		wg.Add(1)
+		go func(ri int) {
+			defer wg.Done()
+			for cj := 0; cj < cols; cj++ {
+				idx := ri*cols + cj
+				result[idx] = blockExtract(caBlock[ri][cj], shuffleIdx[idx], c.D1, c.D2)
+			}
+		}(bi)
 	}
+	wg.Wait()
 	return result
 }
 
 func blockExtract(block [][]float32, shuffle []int, d1, d2 float32) float32 {
 	blockDCT := DCT2D(block)
-	flat := make([]float32, len(shuffle))
-	for i := 0; i < len(block); i++ {
-		for j := 0; j < len(block[0]); j++ {
-			flat[i*len(block[0])+j] = blockDCT[i][j]
-		}
-	}
+	flat := flatten(blockDCT, len(shuffle))
 	shuffled := ShuffleArray(flat, shuffle)
-	shuffledMat := make([][]float32, len(block))
-	for i := 0; i < len(block); i++ {
-		shuffledMat[i] = make([]float32, len(block[0]))
-		for j := 0; j < len(block[0]); j++ {
-			shuffledMat[i][j] = shuffled[i*len(block[0])+j]
-		}
-	}
+	shuffledMat := unflatten(shuffled, len(block), len(block[0]))
 	_, s, _ := JacobiSVD(shuffledMat)
 	wm := float32(0)
 	if math.Mod(float64(s[0]), float64(d1)) > float64(d1)/2 {
@@ -425,6 +431,24 @@ func UnshuffleWM(bits []float32, seed uint64) []float32 {
 		result[i] = bits[p]
 	}
 	return result
+}
+
+// clipParallel clips BGR pixels to [0,255] in parallel.
+func clipParallel(img [][][3]float32) {
+	h := len(img)
+	var wg sync.WaitGroup
+	for i := 0; i < h; i++ {
+		wg.Add(1)
+		go func(row int) {
+			defer wg.Done()
+			for j := range img[row] {
+				for k := 0; k < 3; k++ {
+					img[row][j][k] = clamp(img[row][j][k], 0, 255)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func clamp(v, lo, hi float32) float32 {

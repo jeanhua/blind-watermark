@@ -1,7 +1,8 @@
 package bwm
 
+import "sync"
+
 // BGRToYUV converts a single pixel from BGR to YUV using OpenCV BT.601 coefficients.
-// Input channels are 0-255 float32; output YUV is 0-255 float32.
 func BGRToYUV(b, g, r float32) (y, u, v float32) {
 	y = 0.114*b + 0.587*g + 0.299*r
 	u = 0.436*b - 0.28886*g - 0.14713*r + 128
@@ -17,7 +18,7 @@ func YUVToBGR(y, u, v float32) (b, g, r float32) {
 	return
 }
 
-// ImageBGRToYUV converts an entire BGR image (H x W x 3) to YUV float32 planes.
+// ImageBGRToYUV converts a BGR image (H x W x 3) to YUV planes (sequential).
 func ImageBGRToYUV(img [][][3]float32) (yPlane, uPlane, vPlane [][]float32) {
 	h := len(img)
 	w := len(img[0])
@@ -35,7 +36,31 @@ func ImageBGRToYUV(img [][][3]float32) (yPlane, uPlane, vPlane [][]float32) {
 	return
 }
 
-// YUVToImageBGR converts YUV float32 planes back to a BGR image.
+// ImageBGRToYUVParallel converts a BGR image to YUV planes with row-level parallelism.
+func ImageBGRToYUVParallel(img [][][3]float32) (yPlane, uPlane, vPlane [][]float32) {
+	h := len(img)
+	w := len(img[0])
+	yPlane = make([][]float32, h)
+	uPlane = make([][]float32, h)
+	vPlane = make([][]float32, h)
+	var wg sync.WaitGroup
+	for i := 0; i < h; i++ {
+		wg.Add(1)
+		go func(row int) {
+			defer wg.Done()
+			yPlane[row] = make([]float32, w)
+			uPlane[row] = make([]float32, w)
+			vPlane[row] = make([]float32, w)
+			for j := 0; j < w; j++ {
+				yPlane[row][j], uPlane[row][j], vPlane[row][j] = BGRToYUV(img[row][j][0], img[row][j][1], img[row][j][2])
+			}
+		}(i)
+	}
+	wg.Wait()
+	return
+}
+
+// YUVToImageBGR converts YUV planes back to a BGR image (sequential).
 func YUVToImageBGR(yPlane, uPlane, vPlane [][]float32, h, w int) [][][3]float32 {
 	img := make([][][3]float32, h)
 	for i := 0; i < h; i++ {
@@ -47,7 +72,25 @@ func YUVToImageBGR(yPlane, uPlane, vPlane [][]float32, h, w int) [][][3]float32 
 	return img
 }
 
-// PadToEven adds a white border to make height and width even.
+// YUVToImageBGRParallel converts YUV planes to BGR with row-level parallelism.
+func YUVToImageBGRParallel(yPlane, uPlane, vPlane [][]float32, h, w int) [][][3]float32 {
+	img := make([][][3]float32, h)
+	var wg sync.WaitGroup
+	for i := 0; i < h; i++ {
+		wg.Add(1)
+		go func(row int) {
+			defer wg.Done()
+			img[row] = make([][3]float32, w)
+			for j := 0; j < w; j++ {
+				img[row][j][0], img[row][j][1], img[row][j][2] = YUVToBGR(yPlane[row][j], uPlane[row][j], vPlane[row][j])
+			}
+		}(i)
+	}
+	wg.Wait()
+	return img
+}
+
+// PadToEven adds a border (value 0) to make height and width even.
 func PadToEven(channel [][]float32) ([][]float32, int, int) {
 	h := len(channel)
 	w := len(channel[0])
@@ -61,12 +104,8 @@ func PadToEven(channel [][]float32) ([][]float32, int, int) {
 	padded := make([][]float32, newH)
 	for i := 0; i < newH; i++ {
 		padded[i] = make([]float32, newW)
-		for j := 0; j < newW; j++ {
-			if i < h && j < w {
-				padded[i][j] = channel[i][j]
-			} else {
-				padded[i][j] = 0
-			}
+		if i < h {
+			copy(padded[i], channel[i])
 		}
 	}
 	return padded, newH, newW
