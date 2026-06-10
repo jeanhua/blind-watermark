@@ -30,3 +30,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# image files
+*.png
+*.jpg
+*.jpeg
