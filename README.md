@@ -33,19 +33,19 @@ blind_watermark_go embed --pwd 1234 input.jpg "secret message" output.png
 
 参数：
 - `--pwd` / `-p`：嵌入密码，用于种子化随机置乱（默认 1）
-- `--pwd_wm`：水印加密密码（可选，默认与 `--pwd`相同）
+- `--pwd-wm`：水印加密密码（可选，默认与 `--pwd`相同）
 - 位置参数：`<原图> <水印文本> <输出图>`
 
 ### 提取水印
 
 ```bash
-blind_watermark_go extract --pwd 1234 --wm_shape 112 output.png
+blind_watermark_go extract --pwd 1234 --wm-shape 112 output.png
 ```
 
 参数：
 - `--pwd` / `-p`：提取密码，必须与嵌入时一致
-- `--pwd_wm`：水印加密密码（可选）
-- `--wm_shape`：水印位长度（嵌入时会输出该值，提取必须一致）
+- `--pwd-wm`：水印加密密码（可选）
+- `--wm-shape`：水印位长度（嵌入时会输出该值，提取必须一致）
 - 位置参数：`<含水印图片>`
 
 ### 示例
@@ -58,7 +58,7 @@ Embedded bits count: 96
 Embed succeeded! Output: marked.png
 
 # 提取
-$ blind_watermark_go extract --pwd 42 --wm_shape 96 marked.png
+$ blind_watermark_go extract --pwd 42 --wm-shape 96 marked.png
 Extract succeeded! Watermark is:
 你好世界
 ```

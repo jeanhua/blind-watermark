@@ -18,7 +18,7 @@ Example: blind_watermark embed --pwd 1234 input.jpg "my secret" output.png`,
 func init() {
 	RootCmd.AddCommand(embedCmd)
 	embedCmd.Flags().StringVarP(&password, "pwd", "p", "1", "Password for embedding (used to seed the shuffle)")
-	embedCmd.Flags().StringVar(&passwordWM, "pwd_wm", "", "Password for watermark encryption (defaults to pwd)")
+	embedCmd.Flags().StringVar(&passwordWM, "pwd-wm", "", "Password for watermark encryption (defaults to pwd)")
 }
 
 func runEmbed(cmd *cobra.Command, args []string) error {

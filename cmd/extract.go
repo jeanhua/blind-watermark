@@ -11,7 +11,7 @@ var extractCmd = &cobra.Command{
 	Use:   "extract [flags] <watermarked_image>",
 	Short: "Extract a text watermark from an image",
 	Long: `Extract a text watermark from an image.
-Example: blind_watermark extract --pwd 1234 --wm_shape 111 output.png`,
+Example: blind_watermark extract --pwd 1234 --wm-shape 111 output.png`,
 	Args: cobra.ExactArgs(1),
 	RunE: runExtract,
 }
@@ -19,9 +19,9 @@ Example: blind_watermark extract --pwd 1234 --wm_shape 111 output.png`,
 func init() {
 	RootCmd.AddCommand(extractCmd)
 	extractCmd.Flags().StringVarP(&password, "pwd", "p", "1", "Password for extraction (must match embed password)")
-	extractCmd.Flags().StringVar(&passwordWM, "pwd_wm", "", "Password for watermark encryption (defaults to pwd)")
-	extractCmd.Flags().StringVar(&wmShape, "wm_shape", "", "Watermark length in bits (required for extraction)")
-	extractCmd.MarkFlagRequired("wm_shape")
+	extractCmd.Flags().StringVar(&passwordWM, "pwd-wm", "", "Password for watermark encryption (defaults to pwd)")
+	extractCmd.Flags().StringVar(&wmShape, "wm-shape", "", "Watermark length in bits (required for extraction)")
+	extractCmd.MarkFlagRequired("wm-shape")
 }
 
 func runExtract(cmd *cobra.Command, args []string) error {
@@ -34,7 +34,7 @@ func runExtract(cmd *cobra.Command, args []string) error {
 
 	wmLen, err := strconv.Atoi(wmShape)
 	if err != nil {
-		return fmt.Errorf("invalid wm_shape: %w", err)
+		return fmt.Errorf("invalid wm-shape: %w", err)
 	}
 
 	img, err := ReadImageFile(inputFile)
